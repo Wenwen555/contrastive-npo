@@ -27,7 +27,7 @@ def eval(
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.pad_token_id)
-        output_ids = output_ids[:, len(input_ids[0]):]
+        output_ids = output_ids[:, len(input_ids[0]):] # size is (batch, len)
         output = tokenizer.batch_decode(
             output_ids,
             skip_special_tokens=True,

@@ -1,5 +1,12 @@
 import sys
 import pathlib
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"]= "2"
+import torch
+print(f"可见的 GPU 数量: {torch.cuda.device_count()}")
+print(f"当前使用的 GPU 索引: {torch.cuda.current_device()}")
+
 BASELINE_PATH = pathlib.Path(__file__).parent.resolve()
 sys.path.append(BASELINE_PATH)
 
@@ -42,7 +49,10 @@ def main():
             learning_rate=args.lr,
             max_len=args.max_len,
             tokenizer_dir=args.tokenizer_dir,
-            resume_from_checkpoint=args.resume_from_checkpoint
+            resume_from_checkpoint=args.resume_from_checkpoint,
+            neg_sample_num=args.neg_sample_num, #额外添加
+            alpha=args.alpha_d,#额外添加
+            coeff_type=args.coeff_type, #额外添加
         )
 
     return;
@@ -67,6 +77,19 @@ def get_args():
         '--out_dir', type=str,
         help="Path to the output model's hf directory. Creates the directory if it doesn't already exist."
     )
+    parser.add_argument(
+        '--neg_sample_num', type=int, default=2,
+        help="Number of negative samples be seen by model."
+    )
+    parser.add_argument(
+        '--alpha_d', type=float, default=1,
+        help="A hyperparameter that controls the distance."
+    )
+    parser.add_argument(
+        '--coeff_type', type=str, default='cosine',
+        help="A hyperparameter that controls the what kind of method calculating coefficience."
+    )
+
     parser.add_argument(
         '--max_len', type=int, default=4096,
         help="max length of input ids fed to the model"

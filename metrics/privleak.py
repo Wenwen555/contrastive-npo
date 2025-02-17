@@ -76,8 +76,14 @@ def eval(
     log['holdout'] = eval_data(holdout_data, model, tokenizer)
 
     auc = {}
-    ppl_types = list(log['forget'].keys())
+    # todo: 这里不知何种缘故，log['forget']是一个元素为字典的列表，导致无法调用keys().
+    ppl_types = []
+    for item in log['forget']:
+        ppl_types.extend(list(item.keys()))  # 逐个提取键
+    ppl_types = list(set(ppl_types))
+    # ppl_types = list(log['forget'].keys())
     ppl_types.remove('text')
+
     for split0 in ['forget', 'retain', 'holdout']:
         for split1 in ['forget', 'retain', 'holdout']:
             log0, log1 = log[split0], log[split1]
@@ -86,7 +92,10 @@ def eval(
                 ppl_member = [d[ppl_type] for d in log1]
                 ppl = np.array(ppl_nonmember + ppl_member)
                 y = np.array([0] * len(ppl_nonmember) + [1] * len(ppl_member))
+                # 检查 ppl 的数据类型
+                if not np.issubdtype(ppl.dtype, np.number):
+                    print(f"Warning: ppl contains non-numeric values for ppl_type={ppl_type}")
+                    print(ppl)
                 _, _, auc_score, _ = sweep(ppl, y)
                 auc[f"{split0}_{split1}_{ppl_type}"] = auc_score
-
     return auc, log

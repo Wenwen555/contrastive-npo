@@ -3,7 +3,6 @@ from typing import List, Dict, Tuple
 from scipy.stats import bootstrap
 import numpy as np
 
-
 class RougeEvalLogger:
 
     def __init__(self):
@@ -12,7 +11,6 @@ class RougeEvalLogger:
             use_stemmer=False
         )
         self.history = []
-
 
     def log(self, prompt: str, gt: str, output: str, question: str | None = None):
         score = self.scorer.score(gt, output)

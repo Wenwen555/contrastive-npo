@@ -11,7 +11,6 @@ from transformers import AutoTokenizer
 
 
 class DefaultDataset(Dataset):
-
     def __init__(
         self,
         file_path: str,
@@ -71,6 +70,7 @@ class DefaultDataset(Dataset):
             ]
 
         # Rotate the tokens if the last `input_ids` isn't filled to max_len
+        # todo: 需要弄清此处的rotate作用！
         if len(self.input_ids[-1]) < max_len:
             self.input_ids[-1] = torch.concat(
                 [self.input_ids[-1], self.input_ids[0]], dim=-1
@@ -132,7 +132,7 @@ class ForgetRetainDataset(DefaultDataset):
         if self.retain_exists:
             return (
                 self.forget_dataset[index],
-                self.retain_dataset[index % len(self.retain_dataset)]
+                self.retain_dataset[index % len(self.retain_dataset)], #todo: 为何此处的index要模retain_dataset的长度呢？
             )
         else:
             return self.forget_dataset[index], None
@@ -141,6 +141,69 @@ class ForgetRetainDataset(DefaultDataset):
     def __len__(self):
         return len(self.forget_dataset)
 
+
+    def get_collate_fn(self):
+
+        def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]]):
+            batch_forget = torch.stack([pair[0] for pair in batch])
+            dict_forget = {
+                "input_ids": batch_forget,
+                "labels": batch_forget.clone(),
+                "attention_mask": torch.ones_like(batch_forget)
+            }
+
+            if self.retain_exists:
+                batch_retain = torch.stack([pair[1] for pair in batch])
+                dict_retain = {
+                    "input_ids": batch_retain,
+                    "labels": batch_retain.clone(),
+                    "attention_mask": torch.ones_like(batch_retain, dtype=torch.bool)
+                }
+            else:
+                dict_retain = None
+
+            return dict_forget, dict_retain
+
+        return collate_fn
+
+class ContrastiveDataset(DefaultDataset):
+    def __init__(
+            self,
+            forget_file_path: str,
+            tokenizer: AutoTokenizer,
+            retain_file_path: str | None = None,
+            max_len: int = 4096,
+            add_bos_token: bool = True,
+            neg_sample_num: int = 0,  # 此处的k决定了“负样本”的个数！
+    ):
+        self.neg_sample_num = neg_sample_num
+        self.forget_dataset = DefaultDataset(
+            forget_file_path, tokenizer,
+            max_len=max_len, add_bos_token=add_bos_token
+        )
+
+        self.retain_exists = retain_file_path is not None
+        if self.retain_exists:
+            self.retain_dataset = DefaultDataset(
+                retain_file_path, tokenizer,
+                max_len=max_len, add_bos_token=add_bos_token
+            )
+
+        self.tokenizer = tokenizer
+
+    def __getitem__(self, index):
+        # assert self.retain_exists == (self.k != 0)
+        if self.retain_exists and self.neg_sample_num != 0:
+            return (
+                self.forget_dataset[index],
+                # 此处的index模retain_dataset的长度以防止越界
+                self.retain_dataset[index % len(self.retain_dataset) : (index + self.neg_sample_num) % len(self.retain_dataset)],
+            )
+        else:
+            return self.forget_dataset[index], None
+
+    def __len__(self):
+        return len(self.forget_dataset)
 
     def get_collate_fn(self):
 

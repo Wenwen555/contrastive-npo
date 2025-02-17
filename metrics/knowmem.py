@@ -3,7 +3,6 @@ from .logger import RougeEvalLogger
 from tqdm.contrib import tzip
 from typing import List
 
-
 def get_prefix_before_words_occur(string: str, words: List[str]) -> str:
     for word in words: string = string.split(word)[0]
     return string

@@ -8,6 +8,10 @@ from typing import *
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import json
 import re
+import wandb
+
+import hashlib
+import pickle
 
 
 def get_rootpath():
@@ -169,3 +173,12 @@ def pad_or_trim_tensor(tensor, target_length, padding_value=0):
     else:
         # No change needed
         return tensor
+
+
+def save(object, file):
+    with open(f'{wandb.run.dir}/{file}', 'wb') as f:
+        pickle.dump(object, f)
+    wandb.save(f'{wandb.run.dir}/{file}')
+
+def md5hash(string):
+    return int(hashlib.md5(string.encode('utf-8')).hexdigest(), 16)

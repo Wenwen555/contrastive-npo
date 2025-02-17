@@ -1,8 +1,10 @@
-from .metrics.verbmem import eval as eval_verbmem
-from .metrics.privleak import eval as eval_privleak
-from .metrics.knowmem import eval as eval_knowmem
-from .utils import load_model, load_tokenizer, write_csv, read_json, write_json
-from .constants import SUPPORTED_METRICS, CORPORA, LLAMA_DIR, DEFAULT_DATA, AUC_RETRAIN
+from sre_constants import AT_UNICODE
+
+from metrics.verbmem import eval as eval_verbmem
+from metrics.privleak import eval as eval_privleak
+from metrics.knowmem import eval as eval_knowmem
+from utils import load_model, load_tokenizer, write_csv, read_json, write_json
+from constants import SUPPORTED_METRICS, CORPORA, LLAMA_DIR, DEFAULT_DATA, AUC_RETRAIN
 
 import os
 from transformers import LlamaForCausalLM, LlamaTokenizer
@@ -75,7 +77,8 @@ def eval_model(
         if temp_dir is not None:
             write_json(auc, os.path.join(temp_dir, "privleak/auc.json"))
             write_json(log, os.path.join(temp_dir, "privleak/log.json"))
-        out['privleak'] = (auc[privleak_auc_key] - AUC_RETRAIN[privleak_auc_key]) / AUC_RETRAIN[privleak_auc_key] * 100
+        print("privleak_auc_key: ", privleak_auc_key)
+        out['privleak'] = (auc[privleak_auc_key] - AUC_RETRAIN[corpus][privleak_auc_key]) / AUC_RETRAIN[corpus][privleak_auc_key] * 100
 
     # 3. knowmem_f
     if 'knowmem_f' in metrics:
@@ -132,9 +135,22 @@ def load_then_eval_models(
         raise ValueError(f"The file extension of `out_file` should be '.csv'.")
 
     # Run evaluation
+    from transformers import AutoModelForCausalLM, AutoConfig
+    import torch
+
     out = []
     for model_dir, name in zip(model_dirs, names):
-        model = load_model(model_dir)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_dir,
+            device_map="auto",  # 自动分配设备（CPU/GPU）
+            low_cpu_mem_usage=True,  # 减少峰值内存占用
+            torch_dtype=torch.float16,  # 半精度加载
+        )
+        # configs = AutoConfig.from_pretrained(model_dir)
+        # model = AutoModelForCausalLM.from_config(configs)
+        # model.load_state_dict(torch.load(f"{model_dir}/pytorch_model.bin"))
+
+        # model = load_model(model_dir)
         tokenizer = load_tokenizer(tokenizer_dir)
         res = eval_model(
             model, tokenizer, metrics, corpus,
@@ -155,4 +171,5 @@ if __name__ == '__main__':
     parser.add_argument('--out_file', type=str, required=True)
     parser.add_argument('--metrics', type=str, nargs='+', default=SUPPORTED_METRICS)
     args = parser.parse_args()
-    load_then_eval_models(**args)
+    args_dict = vars(args)
+    load_then_eval_models(**args_dict)
