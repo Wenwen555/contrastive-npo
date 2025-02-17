@@ -1,9 +1,0 @@
-__pycache__/
-data/
-local_datasets/
-ckpt/
-model/
-meta-llama/
-.idea/
-output/
-temp/
