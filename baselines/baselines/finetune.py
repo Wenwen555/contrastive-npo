@@ -1,11 +1,15 @@
-from .dataset import DefaultDataset
-from .utils import load_model_and_tokenizer
-import os
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "1,2"
-import torch
-print(f"可见的 GPU 数量: {torch.cuda.device_count()}")
-print(f"当前使用的 GPU 索引: {torch.cuda.current_device()}")
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(__file__, "../../..")))
+from baselines.baselines.dataset import DefaultDataset
+from baselines.baselines.utils import load_model_and_tokenizer
+
+
+# os.environ["CUDA_VISIBLE_DEVICES"]= "1,2"
+# import torch
+# print(f"可见的 GPU 数量: {torch.cuda.device_count()}")
+# print(f"当前使用的 GPU 索引: {torch.cuda.current_device()}")
 
 import transformers
 import argparse
@@ -94,7 +98,6 @@ def get_args():
         '--max_len', type=int, default=4096,
         help="max length of input ids fed to the model"
     )
-
     # Gradient ascent & Gradient difference
     parser.add_argument('--per_device_batch_size', type=int, default=2)
 

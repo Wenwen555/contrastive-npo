@@ -3,7 +3,8 @@ SUPPORTED_METRICS = ['verbmem_f', 'privleak', 'knowmem_f', 'knowmem_r']
 CORPORA = ['news', 'books']
 
 # LLAMA_DIR = "./meta-llama/Llama-2-7b-hf"
-LLAMA_DIR = "./meta-llama"
+# LLAMA_DIR = "./meta-llama"
+LLAMA_DIR = "/root/autodl-tmp/contrastive-npo/models/pythia/pythia-410m-news"
 
 DEFAULT_DATA = {
     'news': {

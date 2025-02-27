@@ -2,15 +2,12 @@ import sys
 import pathlib
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"]= "2"
-import torch
-print(f"可见的 GPU 数量: {torch.cuda.device_count()}")
-print(f"当前使用的 GPU 索引: {torch.cuda.current_device()}")
 
 BASELINE_PATH = pathlib.Path(__file__).parent.resolve()
 sys.path.append(BASELINE_PATH)
 
-from baselines import it_unlearn, tv_unlearn, finetune
+sys.path.insert(0, os.path.abspath(os.path.join(__file__, "../..")))
+from baselines.baselines import it_unlearn, tv_unlearn, finetune
 
 import argparse
 from os.path import basename, dirname, join as pathjoin
@@ -53,6 +50,7 @@ def main():
             neg_sample_num=args.neg_sample_num, #额外添加
             alpha=args.alpha_d,#额外添加
             coeff_type=args.coeff_type, #额外添加
+            use_lora = args.use_lora, #额外添加
         )
 
     return;
@@ -88,6 +86,10 @@ def get_args():
     parser.add_argument(
         '--coeff_type', type=str, default='cosine',
         help="A hyperparameter that controls the what kind of method calculating coefficience."
+    )
+    parser.add_argument(
+        '--use_lora', type=bool, default=False,
+        help="A hyperparameter that control peft."
     )
 
     parser.add_argument(

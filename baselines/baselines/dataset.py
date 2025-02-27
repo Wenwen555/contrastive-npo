@@ -216,7 +216,9 @@ class ContrastiveDataset(DefaultDataset):
             }
 
             if self.retain_exists:
-                batch_retain = torch.stack([pair[1] for pair in batch])
+                # batch_retain = torch.stack([pair[1] for pair in batch])
+                # batch_retain = torch.stack([torch.stack(pair[1]) for pair in batch])
+                batch_retain = torch.stack([tensor for pair in batch for tensor in pair[1]])
                 dict_retain = {
                     "input_ids": batch_retain,
                     "labels": batch_retain.clone(),

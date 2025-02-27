@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.cuda import device_count
 import transformers
 from transformers import Trainer, AutoModelForCausalLM
-
+from peft import  get_peft_model, LoraConfig
 
 def unlearn(
     model_dir: str,
@@ -26,6 +26,7 @@ def unlearn(
     neg_sample_num: int = 2,
     alpha : float = 1,
     coeff_type : str | None = None,
+    use_lora : bool | None = False,
 ):
     if 'gd' in loss_type:
         assert retain_data_file is not None, "Retain data must be specified for grad_diff."
@@ -34,6 +35,7 @@ def unlearn(
         model_dir,
         tokenizer_dir=tokenizer_dir
     )
+    model.enable_input_require_grads()
     print("Using algorithm: ", loss_type)
 
     ref_model = (
@@ -41,6 +43,24 @@ def unlearn(
         if 'npo' in loss_type or 'kl' in loss_type or 'cont_npo' in loss_type
         else None
     )
+    
+    if use_lora:
+        peft_config = LoraConfig(
+            r=8, 
+            lora_alpha=32, 
+            target_modules=["query_key_value"], 
+            lora_dropout=0.05,
+            bias="none", 
+            task_type="CAUSAL_LM"
+        )
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+        for name, param in model.base_model.named_parameters():
+            if name is not None and ("lora_A" in name or "lora_B" in name):  # 确保 name 不为 None
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+    
 
     # dataset = ForgetRetainDataset(
     #     data_file,
@@ -67,9 +87,12 @@ def unlearn(
         save_strategy='epoch',  # Save every epoch
         num_train_epochs=epochs,
         optim='adamw_torch',
+        # optim="adamw_bnb_8bit", #尝试用牺牲精度方式来减小显存
+        gradient_checkpointing=True, # 激活梯度检查点 # try
         lr_scheduler_type='constant',
         bf16=True,
-        report_to='none'        # Disable wandb
+        report_to='none',  # Disable wandb
+        # ddp_find_unused_parameters=False,  # 关闭 DDP 查找未使用参数
     )
 
 
@@ -85,6 +108,7 @@ def unlearn(
         neg_sample_num=neg_sample_num, #额外添加
         coeff_type=coeff_type, #额外添加
     )
+    
     model.config.use_cache = False  # silence the warnings.
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(out_dir)
@@ -120,9 +144,10 @@ class IterativeUnlearner(Trainer):
     def compute_loss(self, model, x, return_outputs=False):
         """Source: https://github.com/licong-lin/negative-preference-optimization/blob/main/synthetic/mymodel.py
         """
-        
+        model.train()
         ### 1. Run model ###
         x_f, x_r = x
+        
         outputs_f = model(
             x_f['input_ids'],
             labels=x_f['labels'] if 'labels' in x_f else x_f['input_ids'].clone(),
@@ -170,18 +195,14 @@ class IterativeUnlearner(Trainer):
                 outputs_r_ref = self.ref_model(
                     x_r['input_ids'],
                     labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
-                    attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(
-                        x_f['input_ids'], dtype=torch.bool),
-                    # output_attentions=False,
-                    # output_hidden_states=True
+                    attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(
+                        x_r['input_ids'], dtype=torch.bool),
                 )
 
                 outputs_f_ref = self.ref_model(
                     x_f['input_ids'],
                     labels=x_f['labels'] if 'labels' in x_f else x_f['input_ids'].clone(),
                     attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(x_f['input_ids'], dtype=torch.bool),
-                    # output_hidden_states=True
-                    # output_attentions=False,
                 )
 
         ### 2. Compute Loss ###
@@ -189,19 +210,18 @@ class IterativeUnlearner(Trainer):
         # print("\nComputing loss: ","Algo: ", self.loss_type)
 
         if 'ga' in self.loss_type:
-            # print("here is ga")
             loss += -loss_f
 
         elif 'npo' == self.loss_type:
-            # print("here is npo")
             neg_log_ratio = outputs_f_ref.logits - outputs_f.logits
             loss += -F.logsigmoid(self.beta * neg_log_ratio).mean() * 2 / self.beta
 
         # todo: 此处并未解决一个问题：即如何使k和x_f的shape[0]不同
         # todo: 因为对比学习需要选取正负样本对，那么是否在loss的提取有所不同呢？ 况且由于存在样本的选取问题，data的loading过程是否需要更改？
+        
         elif 'cont_npo' in self.loss_type:
             from math import log, exp
-
+            import ipdb
             total_coeff = []
             k = self.neg_sample_num
 
@@ -222,9 +242,9 @@ class IterativeUnlearner(Trainer):
 
                 for idx in range(x_f['input_ids'].shape[0]):
                     temp_sum = 0
-                    for j in range(x_r['input_ids'].shape[0]):
+                    for j in range(k):
                         # 计算余弦相似度的dot product和norm
-                        cos_similarity = torch.nn.functional.cosine_similarity(embeddings_f[j].unsqueeze(0), embeddings_r[idx].unsqueeze(0))
+                        cos_similarity = torch.nn.functional.cosine_similarity(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0))
                         temp_sum += cos_similarity / self.alpha
                     total_coeff.append(temp_sum)
             elif self.coeff_type == 'semantic_entropy':
@@ -240,15 +260,15 @@ class IterativeUnlearner(Trainer):
 
             # 更新loss计算，避免重复计算
             for idx in range(x_f['input_ids'].shape[0]):
-                for j in range(x_r['input_ids'].shape[0]):
-                    log_ratio_1 = outputs_r.logits[j] - outputs_r_ref.logits[idx] - log(k)
-                    log_ratio_2 = outputs_f_ref.logits[idx] - outputs_f.logits[j] + log(k)
+                for j in range(k):
+                    log_ratio_1 = outputs_r.logits[idx + j] - outputs_r_ref.logits[idx + j] - log(k)
+                    log_ratio_2 = outputs_f_ref.logits[idx] - outputs_f.logits[idx] + log(k)
 
                     if self.coeff_type == 'cosine':
                         # 计算余弦相似度
-                        coeff = torch.nn.functional.cosine_similarity(embeddings_f[j].unsqueeze(0), embeddings_r[idx].unsqueeze(0))
+                        coeff = torch.nn.functional.cosine_similarity(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0))
                         temp1 = (exp((1 - coeff) / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
-                        temp1 = ((coeff / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
+                        # temp1 = ((coeff / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
                     elif self.coeff_type == 'semantic_entropy':
                         # coeff = compute_semantic_entropy(torch.cat((x_f['input_ids'][idx],x_r['input_ids'][j]),dim=0))
                         temp1 = (exp(coeff / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
