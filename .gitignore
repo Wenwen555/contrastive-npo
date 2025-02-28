@@ -3,3 +3,4 @@ temp/
 models/
 ckpt/
 .gitignore
+output/
