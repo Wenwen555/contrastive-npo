@@ -10,7 +10,7 @@ LLAMA_DIR='/root/autodl-tmp/contrastive-npo/models/pythia/pythia-410m-news'
 MAX_LEN=2048
 EPOCHS=10
 LR='1e-5'
-PER_DEVICE_BATCH_SIZE=3 # 1 GPUs
+PER_DEVICE_BATCH_SIZE=4 # 1 GPUs
 FT_EPOCHS=10
 FT_LR='1e-5'
 
@@ -23,7 +23,7 @@ for algo in 'cont_npo'; do
         --out_dir "./ckpt/$CORPUS/cont_npo_cosine_1_4n_peft" \
         --max_len $MAX_LEN --epochs $EPOCHS --lr $LR \
         --per_device_batch_size $PER_DEVICE_BATCH_SIZE \
-    	--coeff_type 'cosine' \
+    	--coeff_type 'distance' \
         --neg_sample_num 4 \
-        --use_lora True
+
 done
