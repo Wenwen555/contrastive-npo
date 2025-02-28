@@ -9,6 +9,8 @@ from torch.cuda import device_count
 import transformers
 from transformers import Trainer, AutoModelForCausalLM
 from peft import  get_peft_model, LoraConfig
+import warnings
+
 
 def unlearn(
     model_dir: str,
@@ -93,8 +95,9 @@ def unlearn(
         bf16=True,
         report_to='none',  # Disable wandb
         # ddp_find_unused_parameters=False,  # 关闭 DDP 查找未使用参数
+        gradient_accumulation_steps = 6,
     )
-
+        
 
     trainer = IterativeUnlearner(
         model=model,
@@ -108,7 +111,8 @@ def unlearn(
         neg_sample_num=neg_sample_num, #额外添加
         coeff_type=coeff_type, #额外添加
     )
-    
+
+    warnings.filterwarnings("ignore", category=UserWarning)
     model.config.use_cache = False  # silence the warnings.
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(out_dir)
@@ -137,9 +141,8 @@ class IterativeUnlearner(Trainer):
         if ref_model is not None:
             assert 'po' in self.loss_type or 'kl' in self.loss_type
             ref_model = ref_model.eval()
-
+        
         super().__init__(*args, **kwargs)
-
 
     def compute_loss(self, model, x, return_outputs=False):
         """Source: https://github.com/licong-lin/negative-preference-optimization/blob/main/synthetic/mymodel.py
@@ -152,8 +155,6 @@ class IterativeUnlearner(Trainer):
             x_f['input_ids'],
             labels=x_f['labels'] if 'labels' in x_f else x_f['input_ids'].clone(),
             attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(x_f['input_ids'], dtype=torch.bool),
-            output_hidden_states = True,
-            # output_attentions=False,
         )
         loss_f = outputs_f.loss
 
@@ -186,8 +187,6 @@ class IterativeUnlearner(Trainer):
                 x_r['input_ids'],
                 labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
                 attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(x_r['input_ids'], dtype=torch.bool),
-                output_hidden_states=True
-                # output_attentions=False,
             )
             loss_r = outputs_r.loss
 
@@ -197,12 +196,14 @@ class IterativeUnlearner(Trainer):
                     labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
                     attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(
                         x_r['input_ids'], dtype=torch.bool),
+                    output_hidden_states=True,
                 )
 
                 outputs_f_ref = self.ref_model(
                     x_f['input_ids'],
                     labels=x_f['labels'] if 'labels' in x_f else x_f['input_ids'].clone(),
                     attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(x_f['input_ids'], dtype=torch.bool),
+                    output_hidden_states=True,
                 )
 
         ### 2. Compute Loss ###
@@ -228,9 +229,8 @@ class IterativeUnlearner(Trainer):
             if self.coeff_type == 'cosine':
                 # 计算余弦相似度
                 with torch.no_grad():
-                    # 保持计算在GPU上，不要将数据转移到CPU
-                    embeddings_f = outputs_f.hidden_states[-1][:, -1, :]
-                    embeddings_r = outputs_r.hidden_states[-1][:, -1, :]
+                    embeddings_f = outputs_f_ref.hidden_states[-1][:, -1, :]
+                    embeddings_r = outputs_r_ref.hidden_states[-1][:, -1, :]
 
                 # for idx in range(x_f['input_ids'].shape[0]):
                 #     temp_sum = 0
@@ -247,6 +247,18 @@ class IterativeUnlearner(Trainer):
                         cos_similarity = torch.nn.functional.cosine_similarity(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0))
                         temp_sum += cos_similarity / self.alpha
                     total_coeff.append(temp_sum)
+                    
+            elif self.coeff_type == 'distance':
+                with torch.no_grad():
+                    embeddings_f = outputs_f_ref.hidden_states[-1][:, -1, :]
+                    embeddings_r = outputs_r_ref.hidden_states[-1][:, -1, :]
+                for idx in range(x_f['input_ids'].shape[0]):
+                    temp_sum = 0
+                    for j in range(k):
+                        cos_similarity = torch.cdist(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0), p=2)
+                        temp_sum += cos_similarity / self.alpha
+                    total_coeff.append(temp_sum)
+                 
             elif self.coeff_type == 'semantic_entropy':
                 from .semantic_entropy import EntailmentPythia
                 pythia = EntailmentPythia(local_model_path='/mnt/wenjt5/muse/model/pythia/pythia-410m-news')
@@ -273,7 +285,9 @@ class IterativeUnlearner(Trainer):
                         # coeff = compute_semantic_entropy(torch.cat((x_f['input_ids'][idx],x_r['input_ids'][j]),dim=0))
                         temp1 = (exp(coeff / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
                     elif self.coeff_type == 'distance':
-                        return
+                        coeff = torch.cdist(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0), p=2)
+                        temp1 = (exp((1 - coeff) / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
+                        
                     temp2 = F.logsigmoid(log_ratio_2) / k
                     loss += temp1 + temp2
 
