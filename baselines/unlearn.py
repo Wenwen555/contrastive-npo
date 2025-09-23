@@ -21,14 +21,16 @@ def main():
 
     elif args.algo == 'tv':
         ft_model_dir = pathjoin(dirname(args.out_dir), basename(args.out_dir) + "_ft")
-        finetune(
-            args.model_dir, args.data_file, ft_model_dir,
-            epochs=args.epochs,
-            per_device_batch_size=args.per_device_batch_size,
-            learning_rate=args.lr,
-            max_len=args.max_len,
-            tokenizer_dir=args.tokenizer_dir
-        )
+        print("Finetuned model path is: ", ft_model_dir)
+        # finetune(
+        #     args.model_dir, args.data_file, ft_model_dir,
+        #     epochs=args.epochs,
+        #     per_device_batch_size=args.per_device_batch_size,
+        #     learning_rate=args.lr,
+        #     max_len=args.max_len,
+        #     tokenizer_dir=args.tokenizer_dir,
+        #     algo=args.algo,
+        # )
         tv_unlearn(
             args.model_dir, args.out_dir,
             some_pt_model_dir=args.model_dir,
@@ -51,6 +53,10 @@ def main():
             alpha=args.alpha_d,#额外添加
             coeff_type=args.coeff_type, #额外添加
             use_lora = args.use_lora, #额外添加
+            version = args.version, #额外添加
+            corpus = args.corpus, #额外添加
+            scal= args.scal, #额外添加
+            beta = args.beta, #额外添加
         )
 
     return;
@@ -84,6 +90,10 @@ def get_args():
         help="A hyperparameter that controls the distance."
     )
     parser.add_argument(
+        '--beta', type=float, default=0.1,
+        help="hyperparameter that scals the loss."
+    )
+    parser.add_argument(
         '--coeff_type', type=str, default='cosine',
         help="A hyperparameter that controls the what kind of method calculating coefficience."
     )
@@ -91,7 +101,18 @@ def get_args():
         '--use_lora', type=bool, default=False,
         help="A hyperparameter that control peft."
     )
-
+    parser.add_argument(
+        '--version', type=int, default=False,
+        help="A hyperparameter that control version of loss function."
+    )
+    parser.add_argument(
+        '--corpus', type=str, default='news',
+        help="experiment corpus."
+    )
+    parser.add_argument(
+        '--scal', type=int, default=0,
+        help="scal of pii dataset."
+    )
     parser.add_argument(
         '--max_len', type=int, default=4096,
         help="max length of input ids fed to the model"

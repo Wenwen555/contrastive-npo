@@ -1,14 +1,41 @@
-from transformers import AutoModelForCausalLM
-
+from peft import PeftModel, PeftConfig
+from transformers import AutoConfig, AutoModelForCausalLM
 import torch
 
-
-def load_model(model_dir: str, **kwargs) -> AutoModelForCausalLM:
-    return AutoModelForCausalLM.from_pretrained(
-        model_dir,
+def load_ft_model(model_dir: str, **kwargs):
+    # 加载 PEFT 配置
+    peft_config = PeftConfig.from_pretrained(model_dir)
+    
+    # 加载基础模型
+    base_model = AutoModelForCausalLM.from_pretrained(
+        peft_config.base_model_name_or_path,
         torch_dtype=torch.bfloat16,
         **kwargs
     )
+    
+    # 加载 LoRA adapter
+    model = PeftModel.from_pretrained(base_model, model_dir)
+    return model
+
+
+def load_model(model_dir: str, state_dict=None, device_map=None):
+    config = AutoConfig.from_pretrained(model_dir)
+
+    model = AutoModelForCausalLM.from_config(config)
+    if state_dict is not None:
+        model.load_state_dict(state_dict)
+
+    if device_map == "auto":
+        model = model.to("cuda" if torch.cuda.is_available() else "cpu")  # or use accelerate
+
+    return model
+
+# def load_model(model_dir: str, **kwargs) -> AutoModelForCausalLM:
+#     return AutoModelForCausalLM.from_pretrained(
+#         model_dir,
+#         torch_dtype=torch.bfloat16,
+#         **kwargs
+#     )
 
 
 def compare(model1, model2) -> bool:
@@ -39,10 +66,21 @@ def unlearn(
 ):
     if some_pt_model_dir is None or some_ft_model_dir is None:
         raise ValueError("Task vector (ilharco2023) requires some pretrained & finetuned models!")
+    
+    # 加载 finetuned 的 LoRA 模型
+    finetuned_model = load_ft_model(some_ft_model_dir)
+    merged_finetuned_model = finetuned_model.merge_and_unload()
 
+    # 加载预训练模型（普通模型即可）
+    pretrained_model = AutoModelForCausalLM.from_pretrained(
+        some_pt_model_dir,
+        torch_dtype=torch.bfloat16
+    )
+
+    # 计算 task vector
     task_vector = TaskVector(
-        pretrained_state_dict=load_model(some_pt_model_dir).state_dict(),
-        finetuned_state_dict=load_model(some_ft_model_dir).state_dict()
+        pretrained_state_dict=pretrained_model.state_dict(),
+        finetuned_state_dict=merged_finetuned_model.state_dict()
     )
 
     if not task_vector.is_nonzero():

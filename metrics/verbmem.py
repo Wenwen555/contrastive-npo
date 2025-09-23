@@ -7,35 +7,76 @@ from typing import List
 def eval(
     model, tokenizer,
     prompts: List[str], gts: List[str],
-    max_new_tokens : int = 128
+    max_new_tokens : int = 40,
+    interactive : bool = False,
 ):
-    logger = RougeEvalLogger()
-    for prompt, gt in tzip(prompts, gts):
-        # Encode the `prompt` into `input_ids`
-        input_ids = tokenizer(
-            prompt,
-            return_tensors='pt',
-            add_special_tokens=True
-        ).input_ids
-        assert len(input_ids) == 1
+    if interactive:
+        print("\n===== 进入交互调试模式 (输入 'exit' 退出) =====")
+        while True:
+            try:
+                user_prompt = input("\n请输入测试prompt: ").strip()
+                if user_prompt.lower() == 'exit':
+                    break
+                
+                # 处理用户输入
+                input_ids = tokenizer(
+                    user_prompt,
+                    return_tensors='pt',
+                    add_special_tokens=True
+                ).input_ids.to(model.device)
+                
+                # 生成输出
+                output_ids = model.generate(
+                    input_ids,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id
+                )
+                
+                # 解码并打印结果
+                output = tokenizer.decode(
+                    output_ids[0][len(input_ids[0]):], 
+                    skip_special_tokens=True
+                )
+                print(f"\n模型输出: {output}")
+                print("-" * 50)
+                
+            except Exception as e:
+                print(f"错误: {str(e)}")
+                continue
+        return None  # 交互模式不返回评估报告
 
-        gt_ids = tokenizer(gt, return_tensors='pt', add_special_tokens=True).input_ids[:, :max_new_tokens]
+    else:
+        logger = RougeEvalLogger()
+        for prompt, gt in tzip(prompts, gts):
+            # input = "Do not repeat!" #avoid the repetition of model.
+            input = ''
+            input += prompt
+            # Encode the `prompt` into `input_ids`
+            input_ids = tokenizer(
+                input,
+                return_tensors='pt',
+                add_special_tokens=True
+            ).input_ids
+            assert len(input_ids) == 1
 
-        # Use the `model` to generate the continuation of the `input_ids`.
-        output_ids = model.generate(
-            input_ids.to(model.device),
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id)
-        output_ids = output_ids[:, len(input_ids[0]):] # size is (batch, len)
-        output = tokenizer.batch_decode(
-            output_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True)[0]
-        gt_short = tokenizer.batch_decode(
-            gt_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True)[0]
-        logger.log(prompt, gt_short, output)
+            gt_ids = tokenizer(gt, return_tensors='pt', add_special_tokens=True).input_ids[:, :max_new_tokens]
 
-    return logger.report()
+            # Use the `model` to generate the continuation of the `input_ids`.
+            output_ids = model.generate(
+                input_ids.to(model.device),
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id)
+            output_ids = output_ids[:, len(input_ids[0]):] # size is (batch, len)
+            output = tokenizer.batch_decode(
+                output_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True)[0]
+            gt_short = tokenizer.batch_decode(
+                gt_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True)[0]
+            logger.log(prompt, gt_short, output)
+
+        return logger.report()

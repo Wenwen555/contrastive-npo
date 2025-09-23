@@ -76,7 +76,6 @@ def eval(
     log['holdout'] = eval_data(holdout_data, model, tokenizer)
 
     auc = {}
-    # todo: 这里不知何种缘故，log['forget']是一个元素为字典的列表，导致无法调用keys().
     ppl_types = []
     for item in log['forget']:
         ppl_types.extend(list(item.keys()))  # 逐个提取键

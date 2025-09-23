@@ -12,7 +12,7 @@ def eval(
     model, tokenizer,
     questions: List[str], answers: List[str],
     icl_qs: List[str] = [], icl_as: List[str] = [],
-    max_new_tokens : int = 32
+    max_new_tokens : int = 50
 ):
     assert len(questions) == len(answers)
     assert len(icl_qs) == len(icl_as)
@@ -21,8 +21,12 @@ def eval(
     general_prompt: str = ""
 
     # Few-shot prompting
+    cnt = 0
     for question, answer in zip(icl_qs, icl_as):
+        if cnt > 3:
+            break
         general_prompt += f"Question: {question}\nAnswer: {answer}\n\n"
+        cnt += 1
 
     for question, answer in tzip(questions, answers):
         prompt = general_prompt + f"Question: {question}\nAnswer: "

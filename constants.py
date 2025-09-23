@@ -1,10 +1,11 @@
 SUPPORTED_METRICS = ['verbmem_f', 'privleak', 'knowmem_f', 'knowmem_r']
 
-CORPORA = ['news', 'books']
+PII_METRICS = ['verbmem_f', 'knowmem_r']
 
-# LLAMA_DIR = "./meta-llama/Llama-2-7b-hf"
-# LLAMA_DIR = "./meta-llama"
-LLAMA_DIR = "/root/autodl-tmp/contrastive-npo/models/pythia/pythia-410m-news"
+
+CORPORA = ['news', 'books', 'pii']
+
+LLAMA_DIR = "/data/home/jvnting/cnpo/meta-llama"
 
 DEFAULT_DATA = {
     'news': {
@@ -22,10 +23,50 @@ DEFAULT_DATA = {
         'privleak_forget_file': "data/books/privleak/forget.json",
         'privleak_retain_file': "data/books/privleak/retain.json",
         'privleak_holdout_file': "data/books/privleak/holdout.json",
-        'knowmem_forget_qa_file': None,
-        'knowmem_forget_qa_icl_file': None,
-        'knowmem_retain_qa_file': None,
-        'knowmem_retain_qa_icl_file': None,
+        'knowmem_forget_qa_file': "data/books/knowmem/forget_qa.json",
+        'knowmem_forget_qa_icl_file': "data/books/knowmem/forget_qa_icl.json",
+        'knowmem_retain_qa_file': "data/books/knowmem/retain_qa.json",
+        'knowmem_retain_qa_icl_file': "data/books/knowmem/retain_qa_icl.json",
+    },
+    'pii':{
+
+        'icl':{
+            'knowmem_forget_qa_icl_file': "/data/home/jvnting/cnpo/data/pii_paraphrase_test/scal-100/knowmem/icl_forget_qa.json",
+            'knowmem_retain_qa_icl_file': "/data/home/jvnting/cnpo/data/pii_paraphrase_test/scal-100/knowmem/icl_retain_qa.json",
+        },
+
+        '5':{
+            'verbmem_forget_file': "/data/home/jvnting/cnpo/data/pii/scal-5/verbmem/forget.json",
+            'knowmem_forget_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-5/knowmem/forget_qa.json",
+            'knowmem_retain_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-5/knowmem/retain_qa.json",
+        },
+        '10':{
+            'verbmem_forget_file': "/data/home/jvnting/cnpo/data/pii/scal-10/verbmem/forget.json",
+            'knowmem_forget_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-10/knowmem/forget_qa.json",
+            'knowmem_retain_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-10/knowmem/retain_qa.json",
+        },
+        '20':{
+            'verbmem_forget_file': "/data/home/jvnting/cnpo/data/pii/scal-20/verbmem/forget.json",
+            'knowmem_forget_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-20/knowmem/forget_qa.json",
+            'knowmem_retain_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-20/knowmem/retain_qa.json",
+        },
+        '40':{
+            'verbmem_forget_file': "/data/home/jvnting/cnpo/data/pii/scal-40/verbmem/forget.json",
+            'knowmem_forget_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-40/knowmem/forget_qa.json",
+            'knowmem_retain_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-40/knowmem/retain_qa.json",
+        },
+        '100':{
+            'verbmem_forget_file': "/data/home/jvnting/cnpo/data/pii/scal-100/verbmem/forget.json",
+            'knowmem_forget_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-100/knowmem/forget_qa.json",
+            'knowmem_retain_qa_file': "/data/home/jvnting/cnpo/data/pii/scal-100/knowmem/retain_qa.json",
+            
+        },
+        'know':{
+            'verbmem_forget_file': "/data/home/jvnting/cnpo/data/pii_paraphrase_test/scal-100-know/verbmem/forget.json",
+            'knowmem_forget_qa_file': "/data/home/jvnting/cnpo/data/pii_paraphrase_test/scal-100-know/knowmem/forget_qa.json",
+            'verbmem_retain_file': "/data/home/jvnting/cnpo/data/pii_paraphrase_test/scal-100-v3/verbmem/retain.json",
+            'knowmem_retain_qa_file': "/data/home/jvnting/cnpo/data/pii_paraphrase_test/scal-100-v3/knowmem/retain_qa.json",
+        }
     }
 }
 

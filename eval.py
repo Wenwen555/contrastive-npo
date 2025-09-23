@@ -4,10 +4,11 @@ from metrics.verbmem import eval as eval_verbmem
 from metrics.privleak import eval as eval_privleak
 from metrics.knowmem import eval as eval_knowmem
 from utils import load_model, load_tokenizer, write_csv, read_json, write_json
-from constants import SUPPORTED_METRICS, CORPORA, LLAMA_DIR, DEFAULT_DATA, AUC_RETRAIN
+from constants import SUPPORTED_METRICS, CORPORA, LLAMA_DIR, DEFAULT_DATA, AUC_RETRAIN, PII_METRICS
 
 import os
 from transformers import LlamaForCausalLM, LlamaTokenizer
+from peft import PeftModel
 from typing import List, Dict, Literal
 from pandas import DataFrame
 
@@ -16,10 +17,11 @@ def eval_model(
     model: LlamaForCausalLM,
     tokenizer: LlamaTokenizer = LLAMA_DIR,
     metrics: List[str] = SUPPORTED_METRICS,
-    corpus: Literal['news', 'books'] | None = None,
+    corpus: Literal['news', 'books', 'pii'] | None = None,
+    scal: str = '5',
     privleak_auc_key: str = 'forget_holdout_Min-40%',
     verbmem_agg_key: str = 'mean_rougeL',
-    verbmem_max_new_tokens: int = 128,
+    verbmem_max_new_tokens: int = 40,
     knowmem_agg_key: str = 'mean_rougeL',
     knowmem_max_new_tokens: int = 32,
     verbmem_forget_file: str | None = None,
@@ -41,14 +43,22 @@ def eval_model(
     if corpus is not None and corpus not in CORPORA:
         raise ValueError(f"Invalid corpus. `corpus` should be either 'news' or 'books'.")
     if corpus is not None:
-        verbmem_forget_file = DEFAULT_DATA[corpus]['verbmem_forget_file'] if verbmem_forget_file is None else verbmem_forget_file
-        privleak_forget_file = DEFAULT_DATA[corpus]['privleak_forget_file'] if privleak_forget_file is None else privleak_forget_file
-        privleak_retain_file = DEFAULT_DATA[corpus]['privleak_retain_file'] if privleak_retain_file is None else privleak_retain_file
-        privleak_holdout_file = DEFAULT_DATA[corpus]['privleak_holdout_file'] if privleak_holdout_file is None else privleak_holdout_file
-        knowmem_forget_qa_file = DEFAULT_DATA[corpus]['knowmem_forget_qa_file'] if knowmem_forget_qa_file is None else knowmem_forget_qa_file
-        knowmem_forget_qa_icl_file = DEFAULT_DATA[corpus]['knowmem_forget_qa_icl_file'] if knowmem_forget_qa_icl_file is None else knowmem_forget_qa_icl_file
-        knowmem_retain_qa_file = DEFAULT_DATA[corpus]['knowmem_retain_qa_file'] if knowmem_retain_qa_file is None else knowmem_retain_qa_file
-        knowmem_retain_qa_icl_file = DEFAULT_DATA[corpus]['knowmem_retain_qa_icl_file'] if knowmem_retain_qa_icl_file is None else knowmem_retain_qa_icl_file
+        if corpus == 'pii':
+            verbmem_forget_file = DEFAULT_DATA[corpus][scal]['verbmem_forget_file'] if verbmem_forget_file is None else verbmem_forget_file
+            knowmem_forget_qa_file = DEFAULT_DATA[corpus][scal]['knowmem_forget_qa_file'] if knowmem_forget_qa_file is None else knowmem_forget_qa_file
+            knowmem_forget_qa_icl_file = DEFAULT_DATA[corpus]['icl']['knowmem_forget_qa_icl_file'] if knowmem_forget_qa_icl_file is None else knowmem_forget_qa_icl_file
+            knowmem_retain_qa_file = DEFAULT_DATA[corpus][scal]['knowmem_retain_qa_file'] if knowmem_retain_qa_file is None else knowmem_retain_qa_file
+            knowmem_retain_qa_icl_file = DEFAULT_DATA[corpus]['icl']['knowmem_retain_qa_icl_file'] if knowmem_retain_qa_icl_file is None else knowmem_retain_qa_icl_file
+        else:
+            verbmem_forget_file = DEFAULT_DATA[corpus]['verbmem_forget_file'] if verbmem_forget_file is None else verbmem_forget_file
+            privleak_forget_file = DEFAULT_DATA[corpus]['privleak_forget_file'] if privleak_forget_file is None else privleak_forget_file
+            privleak_retain_file = DEFAULT_DATA[corpus]['privleak_retain_file'] if privleak_retain_file is None else privleak_retain_file
+            privleak_holdout_file = DEFAULT_DATA[corpus]['privleak_holdout_file'] if privleak_holdout_file is None else privleak_holdout_file
+            knowmem_forget_qa_file = DEFAULT_DATA[corpus]['knowmem_forget_qa_file'] if knowmem_forget_qa_file is None else knowmem_forget_qa_file
+            knowmem_forget_qa_icl_file = DEFAULT_DATA[corpus]['knowmem_forget_qa_icl_file'] if knowmem_forget_qa_icl_file is None else knowmem_forget_qa_icl_file
+            knowmem_retain_qa_file = DEFAULT_DATA[corpus]['knowmem_retain_qa_file'] if knowmem_retain_qa_file is None else knowmem_retain_qa_file
+            knowmem_retain_qa_icl_file = DEFAULT_DATA[corpus]['knowmem_retain_qa_icl_file'] if knowmem_retain_qa_icl_file is None else knowmem_retain_qa_icl_file
+    
 
     out = {}
 
@@ -102,8 +112,8 @@ def eval_model(
         qa = read_json(knowmem_retain_qa_file)
         icl = read_json(knowmem_retain_qa_icl_file)
         agg, log = eval_knowmem(
-            questions=[d['question'] for d in qa],
-            answers=[d['answer'] for d in qa],
+            questions=[d['question'] for d in qa][:20],
+            answers=[d['answer'] for d in qa][:20],
             icl_qs=[d['question'] for d in icl],
             icl_as=[d['answer'] for d in icl],
             model=model, tokenizer=tokenizer,
@@ -118,19 +128,21 @@ def eval_model(
 
 
 def load_then_eval_models(
-    model_dirs: List[str],
-    names: List[str],
-    corpus: Literal['news', 'books'],
+    model_dirs: str,
+    basemodel_dir: str,
+    names: str,
+    corpus: str,
     tokenizer_dir: str = LLAMA_DIR,
     out_file: str | None = None,
     metrics: List[str] = SUPPORTED_METRICS,
-    temp_dir: str = "temp"
+    temp_dir: str = "temp",
+    scal: str = '5',
+    loss_type: str = 'ga-beta=0.1',
+    loss: str = 'ga'
 ) -> DataFrame:
     # Argument sanity check
     if not model_dirs:
         raise ValueError(f"`model_dirs` should be non-empty.")
-    if len(model_dirs) != len(names):
-        raise ValueError(f"`model_dirs` and `names` should equal in length.")
     if out_file is not None and not out_file.endswith('.csv'):
         raise ValueError(f"The file extension of `out_file` should be '.csv'.")
 
@@ -138,38 +150,67 @@ def load_then_eval_models(
     from transformers import AutoModelForCausalLM, AutoConfig
     import torch
 
-    out = []
-    for model_dir, name in zip(model_dirs, names):
-        model = AutoModelForCausalLM.from_pretrained(
-            model_dir,
+    out = [] 
+    if corpus != "pii":
+        if names == 'pretrained_model' or names == 'retrained_model':
+            model = AutoModelForCausalLM.from_pretrained(
+                model_dirs,
+                device_map="auto",  # 自动分配设备（CPU/GPU）
+                low_cpu_mem_usage=True,  # 减少峰值内存占用
+                torch_dtype=torch.float16,  # 半精度加载
+            )
+        else:
+            print("!!!Loading model from: ", model_dirs)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_dirs,
+                device_map="auto",  # 自动分配设备（CPU/GPU）
+                low_cpu_mem_usage=True,  # 减少峰值内存占用
+                torch_dtype=torch.float16,  # 半精度加载
+            )
+    else:
+        base_model = AutoModelForCausalLM.from_pretrained(
+            basemodel_dir,
             device_map="auto",  # 自动分配设备（CPU/GPU）
             low_cpu_mem_usage=True,  # 减少峰值内存占用
             torch_dtype=torch.float16,  # 半精度加载
         )
-        # configs = AutoConfig.from_pretrained(model_dir)
-        # model = AutoModelForCausalLM.from_config(configs)
-        # model.load_state_dict(torch.load(f"{model_dir}/pytorch_model.bin"))
+        print("loading lora configuration from:", model_dirs)
+        peft_model = PeftModel.from_pretrained(base_model, model_dirs)
+        model = peft_model.merge_and_unload()
 
-        # model = load_model(model_dir)
-        tokenizer = load_tokenizer(tokenizer_dir)
+    tokenizer = load_tokenizer(tokenizer_dir)
+    if corpus == 'pii':
+        metrics = PII_METRICS
+        print("Using metrics: ", metrics)
         res = eval_model(
-            model, tokenizer, metrics, corpus,
-            temp_dir=os.path.join(temp_dir, name)
+            model, tokenizer, metrics, corpus, scal,
+            temp_dir=os.path.join(temp_dir, corpus,'final','scalability', f"scal-{scal}", loss_type, loss, names)
         )
-        out.append({'name': name} | res)
-        if out_file is not None: write_csv(out, out_file)
+    else:
+        metrics = SUPPORTED_METRICS
+        print("Using metrics: ", metrics)
+        res = eval_model(
+            model, tokenizer, metrics, corpus, scal,
+            temp_dir=os.path.join(temp_dir, corpus, 'final', loss_type, loss, names)
+        )
+    out.append({'name': names} | res)
+    if out_file is not None: write_csv(out, out_file)
     return DataFrame(out)
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_dirs', type=str, nargs='+', default=[])
-    parser.add_argument('--names', type=str, nargs='+', default=[])
+    parser.add_argument('--model_dirs', type=str, default='')
+    parser.add_argument('--basemodel_dir', type=str, default=LLAMA_DIR)
+    parser.add_argument('--names', type=str, default='')
     parser.add_argument('--tokenizer_dir', type=str, default=LLAMA_DIR)
     parser.add_argument('--corpus', type=str, required=True, choices=CORPORA)
     parser.add_argument('--out_file', type=str, required=True)
     parser.add_argument('--metrics', type=str, nargs='+', default=SUPPORTED_METRICS)
+    parser.add_argument('--scal', type=str, default='5')
+    parser.add_argument('--loss_type', type=str, default='npo-beta=0.1')
+    parser.add_argument('--loss', type=str, default='npo')
     args = parser.parse_args()
     args_dict = vars(args)
     load_then_eval_models(**args_dict)

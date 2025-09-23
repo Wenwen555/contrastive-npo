@@ -1,6 +1,20 @@
 .ipynb_checkpoints/
-temp/
-models/
+
+# 排除大文件夹
+data/
 ckpt/
-.gitignore
+local_datasets/
+models/
+temp/
+wandb/
+meta-llama/
+
+# 排除 IDE 和 Python 缓存文件
+.vscode/
+__pycache__/
+
+# 排除输出文件
 output/
+
+# 排除 Git 配置文件
+.gitignore

@@ -1,16 +1,16 @@
-from scipy.ndimage import label
-
 from .utils import load_model_and_tokenizer, load_model
-from .dataset import ForgetRetainDataset, ContrastiveDataset
+from .dataset import ContrastiveDataset, ForgetRetainDataset, PairedUnlearning
+from math import log, exp
 
 import torch
+from torch import nn
 import torch.nn.functional as F
 from torch.cuda import device_count
 import transformers
+from peft import  get_peft_model, PeftModel, LoraConfig
 from transformers import Trainer, AutoModelForCausalLM
-from peft import  get_peft_model, LoraConfig
 import warnings
-
+# import wandb
 
 def unlearn(
     model_dir: str,
@@ -26,61 +26,122 @@ def unlearn(
     resume_from_checkpoint: bool = False,
 
     neg_sample_num: int = 2,
+    beta : float = 0.1,
     alpha : float = 1,
     coeff_type : str | None = None,
-    use_lora : bool | None = False,
+    use_lora : bool | None = True,
+    version : int = 3,
+    corpus: str = 'news',
+    scal: int = 0,
 ):
-    if 'gd' in loss_type:
-        assert retain_data_file is not None, "Retain data must be specified for grad_diff."
+    if 'pii' not in data_file:
+        if 'gd' in loss_type:
+            # this is not valid for pii data!
+            assert retain_data_file is not None, "Retain data must be specified for grad_diff."
 
-    model, tokenizer = load_model_and_tokenizer(
-        model_dir,
-        tokenizer_dir=tokenizer_dir
-    )
-    model.enable_input_require_grads()
+    if use_lora:
+        print("Lora is used when finetuning!")
+        base_model, tokenizer = load_model_and_tokenizer(
+            tokenizer_dir,
+            tokenizer_dir=tokenizer_dir
+        )
+        base_model.enable_input_require_grads()
+        peft_model = PeftModel.from_pretrained(base_model, model_dir)
+        peft_model.print_trainable_parameters()
+        print("Merging lora into model")
+        model = peft_model.merge_and_unload()
+
+        ref_model = (
+            load_model(model_dir)
+            if 'po' in loss_type or 'kl' in loss_type
+            else None
+        )
+    else:
+        print("using original model!!")
+        model, tokenizer = load_model_and_tokenizer(
+            model_dir,
+            tokenizer_dir=tokenizer_dir
+        )
+        model.enable_input_require_grads()
+        ref_model = (
+            load_model(model_dir)
+            if 'npo' in loss_type or 'kl' in loss_type or 'cont_npo' in loss_type
+            else None
+        )
     print("Using algorithm: ", loss_type)
 
-    ref_model = (
-        load_model(model_dir)
-        if 'npo' in loss_type or 'kl' in loss_type or 'cont_npo' in loss_type
-        else None
-    )
-    
-    if use_lora:
+    use_lora_for_unlearning = True
+    if use_lora_for_unlearning:
         peft_config = LoraConfig(
-            r=8, 
-            lora_alpha=32, 
-            target_modules=["query_key_value"], 
+            r=32, 
+            lora_alpha=64, 
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"], 
             lora_dropout=0.05,
             bias="none", 
             task_type="CAUSAL_LM"
         )
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
-        for name, param in model.base_model.named_parameters():
-            if name is not None and ("lora_A" in name or "lora_B" in name):  # 确保 name 不为 None
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
     
-
-    # dataset = ForgetRetainDataset(
-    #     data_file,
-    #     tokenizer=tokenizer,
-    #     retain_file_path=retain_data_file,
-    #     max_len=max_len
-    # )
-
-    dataset = ContrastiveDataset(
-        data_file,
-        tokenizer=tokenizer,
-        retain_file_path=retain_data_file,
-        max_len=max_len,
-        neg_sample_num=neg_sample_num, #k是负样本的个数
-    )
-
+    if 'cont_npo' in loss_type:
+        if corpus == 'pii':
+            dataset = PairedUnlearning(
+                data_file,
+                tokenizer=tokenizer,
+                max_len=max_len,
+                neg_sample_num=neg_sample_num, #k是负样本的个数
+                retain=True,
+                # use_target=True,
+            )
+            # print("Retain set 原始 token 数量:", dataset.get_retain_raw_token_count())
+            # print("Forget set 原始 token 数量:", dataset.get_forget_raw_token_count())
+            # import ipdb
+            # ipdb.set_trace()
+            similarity_matrix = torch.load(f"/data/home/jvnting/cnpo/data/pii/similarity/similarity-scal-{int(scal)}.pt")
+        else:        
+            dataset = ContrastiveDataset(
+                data_file,
+                tokenizer=tokenizer,
+                retain_file_path=retain_data_file,
+                max_len=max_len,
+                neg_sample_num=neg_sample_num,
+                version=version,
+            )    
+            similarity_matrix = None
+    else:
+        similarity_matrix = None
+        if loss_type == 'npo' or loss_type == 'simnpo' or loss_type == 'ga':
+            retain = False
+        else:
+            retain = True
+        if corpus == 'pii':
+            dataset = PairedUnlearning(
+                data_file,
+                tokenizer=tokenizer,
+                max_len=max_len,
+                retain=retain,
+            )
+        else:
+            dataset = ForgetRetainDataset(
+                data_file,
+                tokenizer=tokenizer,
+                retain_file_path=retain_data_file,
+                max_len=max_len,
+            )
+    
     if device_count() == 0:
         raise ValueError("Device not detected!")
+    
+    # if  'cont_npo' in loss_type:
+    #     wandb.init(project=f"MUSE-7B-{corpus}-final", name="-".join([loss_type,coeff_type,str(neg_sample_num),f'v{version}',f'beta={beta}']))
+    # else:
+    #     wandb.init(project=f"MUSE-7B-{corpus}-final", name="-".join([loss_type,f'beta={beta}']))
+
+    # wandb.watch(
+    #     model,  # 要监视的模型
+    #     log="all",  # 记录梯度 ("gradients") 和参数 ("parameters")
+    #     log_freq=50,  # 每 10 步记录一次
+    # )
 
     training_args = transformers.TrainingArguments(
         output_dir=out_dir,
@@ -89,15 +150,13 @@ def unlearn(
         save_strategy='epoch',  # Save every epoch
         num_train_epochs=epochs,
         optim='adamw_torch',
-        # optim="adamw_bnb_8bit", #尝试用牺牲精度方式来减小显存
         gradient_checkpointing=True, # 激活梯度检查点 # try
         lr_scheduler_type='constant',
         bf16=True,
-        report_to='none',  # Disable wandb
-        # ddp_find_unused_parameters=False,  # 关闭 DDP 查找未使用参数
-        gradient_accumulation_steps = 6,
+        report_to='none', 
+        # report_to='wandb',  # Disable wandb
+        # gradient_accumulation_steps=0,
     )
-        
 
     trainer = IterativeUnlearner(
         model=model,
@@ -107,9 +166,12 @@ def unlearn(
         args=training_args,
         data_collator=dataset.get_collate_fn(),
         loss_type=loss_type,
+        beta=beta,
         alpha=alpha, #额外添加
         neg_sample_num=neg_sample_num, #额外添加
         coeff_type=coeff_type, #额外添加
+        version=version, #额外添加
+        similarity_matrix=similarity_matrix,#额外添加
     )
 
     warnings.filterwarnings("ignore", category=UserWarning)
@@ -118,25 +180,31 @@ def unlearn(
     trainer.save_model(out_dir)
 
 
-
 class IterativeUnlearner(Trainer):
     """Source: https://github.com/locuslab/tofu/blob/main/dataloader.py
     """
 
-    def __init__(self, *args,
-                 loss_type: str = 'cont_npo',
-                 ref_model: AutoModelForCausalLM | None = None,
-                 beta: float = 0.1,
-                 neg_sample_num=2, #额外添加
-                 alpha: float = 1, #额外添加
-                 coeff_type: str = 'cosine', #额外添加
-                 **kwargs):
+    def __init__(
+        self, *args,
+        loss_type: str = 'cont_npo',
+        ref_model: AutoModelForCausalLM | None = None,
+        beta: float = 0.1,
+        neg_sample_num=2, #额外添加
+        alpha: float = 1, #额外添加
+        coeff_type: str = 'cosine', #额外添加
+        version: int = 3, #额外添加:默认用第三种version loss function
+        similarity_matrix = None,
+        **kwargs
+    ):
         self.loss_type = loss_type
         self.ref_model = ref_model
         self.beta = beta # Only relevant when `'po' in self.loss_type`
         self.alpha = alpha #额外添加
         self.neg_sample_num = neg_sample_num #额外添加
         self.coeff_type = coeff_type #额外添加
+        self.version = version #额外添加
+        self.similarity_matrix = similarity_matrix #额外添加
+        self.gamma = 0 #额外添加 for simnpo
 
         if ref_model is not None:
             assert 'po' in self.loss_type or 'kl' in self.loss_type
@@ -144,12 +212,14 @@ class IterativeUnlearner(Trainer):
         
         super().__init__(*args, **kwargs)
 
-    def compute_loss(self, model, x, return_outputs=False):
+    def compute_loss(self, model, x, num_items_in_batch=None, return_outputs=False):
         """Source: https://github.com/licong-lin/negative-preference-optimization/blob/main/synthetic/mymodel.py
         """
         model.train()
         ### 1. Run model ###
-        x_f, x_r = x
+        ## This is temporally set for pii data using version 3 for training !
+        ## It need reframing after! 
+        x_r, x_f = x
         
         outputs_f = model(
             x_f['input_ids'],
@@ -157,39 +227,14 @@ class IterativeUnlearner(Trainer):
             attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(x_f['input_ids'], dtype=torch.bool),
         )
         loss_f = outputs_f.loss
-
-        if 'gdr' in self.loss_type or 'klr' in self.loss_type:
+        
+        if 'cont_npo' in self.loss_type:
             outputs_r = model(
                 x_r['input_ids'],
                 labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
                 attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(x_r['input_ids'], dtype=torch.bool)
             )
             loss_r = outputs_r.loss
-
-        if 'klf' in self.loss_type or 'npo' == self.loss_type:
-            with torch.no_grad():
-                outputs_f_ref = self.ref_model(
-                    x_f['input_ids'],
-                    labels=x_f['labels'] if 'labels' in x_f else x_f['input_ids'].clone(),
-                    attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(x_f['input_ids'], dtype=torch.bool)
-                )
-
-        if 'klr' in self.loss_type:
-            with torch.no_grad():
-                outputs_r_ref = self.ref_model(
-                    x_r['input_ids'],
-                    labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
-                    attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(x_r['input_ids'], dtype=torch.bool)
-                )
-
-        if 'cont_npo' in self.loss_type:
-            outputs_r = model(
-                x_r['input_ids'],
-                labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
-                attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(x_r['input_ids'], dtype=torch.bool),
-            )
-            loss_r = outputs_r.loss
-
             with torch.no_grad():
                 outputs_r_ref = self.ref_model(
                     x_r['input_ids'],
@@ -202,97 +247,192 @@ class IterativeUnlearner(Trainer):
                 outputs_f_ref = self.ref_model(
                     x_f['input_ids'],
                     labels=x_f['labels'] if 'labels' in x_f else x_f['input_ids'].clone(),
-                    attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(x_f['input_ids'], dtype=torch.bool),
+                    attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(
+                        x_f['input_ids'], dtype=torch.bool),
                     output_hidden_states=True,
                 )
+        else:
+            if 'gdr' in self.loss_type or 'klr' in self.loss_type:
+                outputs_r = model(
+                    x_r['input_ids'],
+                    labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
+                    attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(x_r['input_ids'], dtype=torch.bool)
+                )
+                loss_r = outputs_r.loss
+
+            if 'klf' in self.loss_type or 'npo' in self.loss_type:
+                with torch.no_grad():
+                    outputs_f_ref = self.ref_model(
+                        x_f['input_ids'],
+                        labels=x_f['labels'] if 'labels' in x_f else x_f['input_ids'].clone(),
+                        attention_mask=x_f['attention_mask'] if 'attention_mask' in x_f else torch.ones_like(x_f['input_ids'], dtype=torch.bool)
+                    )
+
+            if 'klr' in self.loss_type:
+                outputs_r = model(
+                    x_r['input_ids'],
+                    labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
+                    attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(x_r['input_ids'], dtype=torch.bool)
+                )
+                with torch.no_grad():
+                    outputs_r_ref = self.ref_model(
+                        x_r['input_ids'],
+                        labels=x_r['labels'] if 'labels' in x_r else x_r['input_ids'].clone(),
+                        attention_mask=x_r['attention_mask'] if 'attention_mask' in x_r else torch.ones_like(x_r['input_ids'], dtype=torch.bool)
+                    )
 
         ### 2. Compute Loss ###
         loss = 0
-        # print("\nComputing loss: ","Algo: ", self.loss_type)
 
         if 'ga' in self.loss_type:
             loss += -loss_f
+        
+        elif 'simnpo' in self.loss_type:
+            neg_log_ratio = - outputs_f.logits - self.gamma
+            loss += -F.logsigmoid(self.beta * neg_log_ratio).mean() * 2 / self.beta
+        
+        # elif 'simnpo' in self.loss_type:
+        #     outputs = model(x_f['input_ids'],labels=x_f['labels'], attention_mask=x_f['attention_mask'])
+        #     loss_mask = x_f['labels'] != -100
+        #     forget_loss = self.get_batch_loss(outputs.logits, x_f['labels']) / loss_mask.sum(-1) - self.gamma
+        #     loss = -F.logsigmoid(self.beta * forget_loss).mean() * 2 / self.beta 
 
-        elif 'npo' == self.loss_type:
+        elif self.loss_type in ['npo', 'npo_klr', 'npo_gdr']:
             neg_log_ratio = outputs_f_ref.logits - outputs_f.logits
             loss += -F.logsigmoid(self.beta * neg_log_ratio).mean() * 2 / self.beta
-
-        # todo: 此处并未解决一个问题：即如何使k和x_f的shape[0]不同
-        # todo: 因为对比学习需要选取正负样本对，那么是否在loss的提取有所不同呢？ 况且由于存在样本的选取问题，data的loading过程是否需要更改？
+            if torch.isnan(loss):
+                print("NaN detected in loss") 
         
         elif 'cont_npo' in self.loss_type:
-            from math import log, exp
-            import ipdb
             total_coeff = []
             k = self.neg_sample_num
+            version = self.version
+
+            embeddings_f = None
+            embeddings_r = None
+            # what if treating it as a changing term when unlearning?
+            with torch.no_grad():
+                embeddings_f = outputs_f_ref.hidden_states[-1][:, -1, :]
+                embeddings_r = outputs_r_ref.hidden_states[-1][:, -1, :]
 
             if self.coeff_type == 'cosine':
-                # 计算余弦相似度
-                with torch.no_grad():
-                    embeddings_f = outputs_f_ref.hidden_states[-1][:, -1, :]
-                    embeddings_r = outputs_r_ref.hidden_states[-1][:, -1, :]
-
-                # for idx in range(x_f['input_ids'].shape[0]):
-                #     temp_sum = 0
-                #     for j in range(x_r['input_ids'].shape[0]):
-                #         # 计算余弦相似度的dot product和norm
-                #         cos_similarity = torch.nn.functional.cosine_similarity(embeddings_f[j].unsqueeze(0), embeddings_r[idx].unsqueeze(0))
-                #         temp_sum += exp((1 - cos_similarity) / self.alpha)
-                #     total_coeff.append(temp_sum)
-
-                for idx in range(x_f['input_ids'].shape[0]):
+                cnt = 0
+                if version in [1,2]:
+                    length = x_f['input_ids'].shape[0]
+                else: 
+                    length = x_r['input_ids'].shape[0]
+                for idx in range(length):
                     temp_sum = 0
                     for j in range(k):
                         # 计算余弦相似度的dot product和norm
-                        cos_similarity = torch.nn.functional.cosine_similarity(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0))
-                        temp_sum += cos_similarity / self.alpha
+                        if version in [1,2]:
+                            cos_similarity = torch.nn.functional.cosine_similarity(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + cnt + j].unsqueeze(0))
+                        elif version == 3:
+                            cos_similarity = torch.nn.functional.cosine_similarity(embeddings_r[idx].unsqueeze(0), embeddings_f[idx + cnt + j].unsqueeze(0))
+                        temp_sum += exp(cos_similarity / self.alpha)
+                        print("Cosine is: ", cos_similarity / self.alpha, "Coefficience is: ", exp(cos_similarity / self.alpha))
+
+                    cnt += 1
                     total_coeff.append(temp_sum)
-                    
             elif self.coeff_type == 'distance':
-                with torch.no_grad():
-                    embeddings_f = outputs_f_ref.hidden_states[-1][:, -1, :]
-                    embeddings_r = outputs_r_ref.hidden_states[-1][:, -1, :]
                 for idx in range(x_f['input_ids'].shape[0]):
                     temp_sum = 0
                     for j in range(k):
-                        cos_similarity = torch.cdist(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0), p=2)
-                        temp_sum += cos_similarity / self.alpha
-                    total_coeff.append(temp_sum)
-                 
-            elif self.coeff_type == 'semantic_entropy':
-                from .semantic_entropy import EntailmentPythia
-                pythia = EntailmentPythia(local_model_path='/mnt/wenjt5/muse/model/pythia/pythia-410m-news')
-                for idx in range(x_f['input_ids'].shape[0]):
-                    temp_sum = 0
-                    for j in range(x_r['input_ids'].shape[0]):
-                        input_ids = torch.cat((x_f['input_ids'][idx].unsqueeze(0),
-                                               x_r['input_ids'][j].unsqueeze(0)),dim=0)
-                        semantic_entropy = pythia.compute_semantic_entropy(input_ids=input_ids)
-                        temp_sum += exp(semantic_entropy / self.alpha)
-
-            # 更新loss计算，避免重复计算
-            for idx in range(x_f['input_ids'].shape[0]):
-                for j in range(k):
-                    log_ratio_1 = outputs_r.logits[idx + j] - outputs_r_ref.logits[idx + j] - log(k)
-                    log_ratio_2 = outputs_f_ref.logits[idx] - outputs_f.logits[idx] + log(k)
-
-                    if self.coeff_type == 'cosine':
-                        # 计算余弦相似度
-                        coeff = torch.nn.functional.cosine_similarity(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0))
-                        temp1 = (exp((1 - coeff) / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
-                        # temp1 = ((coeff / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
-                    elif self.coeff_type == 'semantic_entropy':
-                        # coeff = compute_semantic_entropy(torch.cat((x_f['input_ids'][idx],x_r['input_ids'][j]),dim=0))
-                        temp1 = (exp(coeff / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
-                    elif self.coeff_type == 'distance':
-                        coeff = torch.cdist(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + j].unsqueeze(0), p=2)
-                        temp1 = (exp((1 - coeff) / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
+                        similarity = torch.cdist(embeddings_f[idx].unsqueeze(0).float(), embeddings_r[idx + j].unsqueeze(0).float(), p=2)
+                        temp_sum += exp(similarity / self.alpha)
                         
-                    temp2 = F.logsigmoid(log_ratio_2) / k
-                    loss += temp1 + temp2
+                    total_coeff.append(temp_sum)
 
-            # 归一化损失
-            loss = -loss.mean() / (x_f['input_ids'].shape[0] * x_r['input_ids'].shape[0])
+            elif self.coeff_type == 'semantic_similarity':
+                for i in range(len(x_r['idx'])):
+                    temp_sum = 0
+                    for j in range(k):
+
+                        similarity = self.similarity_matrix[x_r['idx'][i]][j]
+                        temp_sum += exp(similarity / self.alpha)
+                        print("similarity is: ", similarity / self.alpha, "Coefficience is: ", exp(similarity / self.alpha))
+                    total_coeff.append(temp_sum)
+
+            if version == 1:
+                for idx in range(x_f['input_ids'].shape[0]):
+                    cnt = 0
+                    log_ratio_f = outputs_f_ref.logits[idx] - outputs_f.logits[idx] - log(k)
+                    
+                    for j in range(k):
+                        # coefficient calculation
+                        if self.coeff_type == 'cosine':
+                            # 计算余弦相似度
+                            coeff = torch.nn.functional.cosine_similarity(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + cnt + j].unsqueeze(0))
+                        elif self.coeff_type == 'distance':
+                            coeff = torch.cdist(embeddings_f[idx].unsqueeze(0).float(),
+                                            embeddings_r[idx + j].unsqueeze(0).float(), p=2)
+                            # temp1 = (exp((1 - coeff) / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
+                        
+                        # loss calculation
+                        log_ratio_r = outputs_r.logits[idx + cnt + j] + log(k) - outputs_r_ref.logits[idx + cnt + j] 
+                        retain_loss = (k / (k + 1)) * F.logsigmoid(self.beta * log_ratio_r) * (exp(coeff / self.alpha) / total_coeff[idx])
+                        forget_loss = (1 / (k + 1)) * F.logsigmoid(self.beta * log_ratio_f) 
+                        loss += retain_loss + forget_loss
+                    cnt += 1
+
+            elif version == 2:
+            # 更新loss计算，避免重复计算
+                for idx in range(x_f['input_ids'].shape[0]):
+                    cnt = 0
+                    log_ratio_f = outputs_f.logits[idx] - outputs_f_ref.logits[idx] - log(k)
+                    
+                    for j in range(k):
+                        # coefficient calculation
+                        if self.coeff_type == 'cosine':
+                            # 计算余弦相似度
+                            coeff = torch.nn.functional.cosine_similarity(embeddings_f[idx].unsqueeze(0), embeddings_r[idx + cnt + j].unsqueeze(0))
+                        elif self.coeff_type == 'distance':
+                            coeff = torch.cdist(embeddings_f[idx].unsqueeze(0).float(),
+                                            embeddings_r[idx + j].unsqueeze(0).float(), p=2)
+                            # temp1 = (exp((1 - coeff) / self.alpha) / total_coeff[idx]) * F.logsigmoid(log_ratio_1)
+                        elif self.coeff_type == 'semantic_entropy':
+                            return
+                        # loss calculation
+                        log_ratio_r = outputs_r_ref.logits[idx + cnt + j]+ log(k) - outputs_r.logits[idx + cnt + j] 
+                        retain_loss = (k / (k + 1)) * F.logsigmoid(self.beta * log_ratio_r)
+                        forget_loss = (1 / (k + 1)) * F.logsigmoid(self.beta * log_ratio_f) * (exp(coeff / self.alpha) / total_coeff[idx])
+                        loss += retain_loss + forget_loss
+                    cnt += 1
+            
+            elif version == 3:
+                if self.coeff_type == 'cosine':
+                    for idx in range(x_r['input_ids'].shape[0]):
+                        cnt = 0
+                        log_ratio_r = outputs_r.logits[idx] - outputs_r_ref.logits[idx] - log(k)
+                        for j in range(k):
+                            # coefficient calculation
+                            coeff = torch.nn.functional.cosine_similarity(embeddings_r[idx].unsqueeze(0), embeddings_f[idx + cnt + j].unsqueeze(0))
+                            log_ratio_f = log(k) + outputs_f_ref.logits[idx + cnt + j] - outputs_f.logits[idx + cnt + j]
+                            retain_loss = (1 / (k + 1)) * (exp(coeff / self.alpha) / total_coeff[idx]) * F.logsigmoid(self.beta * log_ratio_r)
+                            forget_loss = (k / (k + 1)) * F.logsigmoid(self.beta * log_ratio_f)
+                            loss += retain_loss + forget_loss
+                        cnt += 1
+                elif self.coeff_type == 'semantic_similarity':
+                    for i in range(len(x_r['idx'])):
+                        cnt = 0
+                        log_ratio_r = outputs_r.logits[i] - outputs_r_ref.logits[i] - log(k)
+                        for j in range(k):
+                            similarity = self.similarity_matrix[x_r['idx'][i]][j]
+                            log_ratio_f = log(k) + outputs_f_ref.logits[i + cnt + j] - outputs_f.logits[i + cnt + j]
+                            retain_loss = (1 / (k + 1)) * (exp(similarity / self.alpha) / total_coeff[i]) * F.logsigmoid(self.beta * log_ratio_r)
+                            forget_loss = (k / (k + 1)) * F.logsigmoid(self.beta * log_ratio_f)
+                            loss += retain_loss + forget_loss
+                        cnt += 1
+
+            if version == 1:
+                loss = -(2 / self.beta) * loss.mean() / (k * x_f['input_ids'].shape[0])
+            elif version == 2:
+                loss = (2 / self.beta) * loss.mean() / (k * x_f['input_ids'].shape[0]) 
+            elif version == 3:
+                loss = -(2 / self.beta) * loss.mean() / (k * x_r['input_ids'].shape[0]) 
+            if torch.isnan(loss):
+                print("NaN detected in loss") 
+                print("total coeff is: ", total_coeff)
 
         else:
             raise NotImplementedError("Cannot infer the given loss type.")
@@ -304,14 +444,22 @@ class IterativeUnlearner(Trainer):
             raise NotImplementedError("KL forget not implemented yet!")
 
         if 'klr' in self.loss_type:
+            outputs_r_prob = F.log_softmax(outputs_r.logits, dim=-1)
+            outputs_r_prob = outputs_r_prob.view(-1, outputs_r.logits.shape[-1])
+            outputs_r_ref_prob = F.log_softmax(outputs_r_ref.logits, dim=-1)
+            outputs_r_ref_prob = outputs_r_ref_prob.view(-1, outputs_r_ref.logits.shape[-1])
             kl_r = F.kl_div(
-                outputs_r.logits,
-                outputs_r_ref.logits,
+                outputs_r_prob,
+                outputs_r_ref_prob,
                 reduction = 'batchmean',
                 log_target = True
             )
+            # print("Retain set logits: ", outputs_r.logits)
+            # print("Reference logits: ", outputs_r_ref.logits)
             loss += kl_r
+            print("KL Divergence is: ", kl_r)
 
+        # wandb.log({"loss": loss.item()}) 
         return (loss, outputs_f) if return_outputs else loss
 
 
@@ -323,3 +471,13 @@ class IterativeUnlearner(Trainer):
             logits = outputs.logits
             loss = outputs.loss
         return (loss, logits, labels)
+
+    def get_batch_loss(self, output, labels):
+        shifted_labels = labels[..., 1:].contiguous()
+        output = output[..., :-1, :].contiguous()
+
+        loss_function = nn.CrossEntropyLoss(ignore_index=-100, reduction='none')
+        # get the sum loss for each sequence in a batch
+        loss = loss_function(output.transpose(-1,-2), shifted_labels).sum(dim=-1)
+
+        return loss
